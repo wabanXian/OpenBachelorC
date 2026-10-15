@@ -3,6 +3,7 @@ import os
 import lzma
 import platform
 import json
+import sys
 
 from .const import PACKAGE_NAME
 from .config import config
@@ -341,4 +342,12 @@ def kill_adb_server():
             ADB_FILEPATH,
             "kill-server",
         ],
+        capture_output=True,
     )
+
+    if proc.returncode != 0:
+        error = proc.stderr.decode("utf-8", errors="replace").strip()
+        if "cannot connect to daemon" not in error:
+            print(error, file=sys.stderr)
+
+    return proc

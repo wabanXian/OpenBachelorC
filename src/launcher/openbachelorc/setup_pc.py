@@ -1,7 +1,6 @@
 from pathlib import Path
 import shutil
 import lzma
-from tkinter.filedialog import askopenfilename
 import sys
 
 import lief
@@ -17,12 +16,31 @@ FRIDA_GADGET_FILENAME = f"florida-{FRIDA_VERSION}.dll"
 
 
 def main():
-    ak_filepath = askopenfilename(filetypes=[("Arknights", "Arknights.exe")])
+    if len(sys.argv) > 1:
+        ak_filepath = sys.argv[1]
+    else:
+        try:
+            from tkinter.filedialog import askopenfilename
+        except ModuleNotFoundError:
+            print(
+                "err: tkinter is unavailable; pass the full path to "
+                "Arknights.exe as an argument"
+            )
+            sys.exit(1)
+
+        ak_filepath = askopenfilename(filetypes=[("Arknights", "Arknights.exe")])
+
     if not ak_filepath:
         print("err: Arknights.exe not given")
         sys.exit(1)
 
     ak_filepath = Path(ak_filepath)
+    if ak_filepath.is_dir():
+        ak_filepath = ak_filepath / "Arknights.exe"
+
+    if not ak_filepath.is_file():
+        print(f"err: Arknights.exe not found: {ak_filepath}")
+        sys.exit(1)
 
     victim_dll_filepath = ak_filepath.parent / VICTIM_DLL_FILENAME
     if not victim_dll_filepath.is_file():
