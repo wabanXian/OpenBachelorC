@@ -8,6 +8,7 @@
 /tmp/
 /trainer.txt
 /dump/
+/analysis/
 *.LICENSE.txt
 /ak_exe_filepath.txt
 

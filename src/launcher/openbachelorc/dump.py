@@ -1,5 +1,10 @@
 import os
 import json
+import hashlib
+import re
+import shutil
+from datetime import datetime
+from pathlib import Path
 
 from .const import PACKAGE_NAME
 from .adb import pull_file
@@ -97,3 +102,118 @@ def pull_dumped_json(emulator_id):
             "failed to pull remote",
             ",".join([remote_filename for remote_filename in err_filename_lst]),
         )
+
+
+def _sha256(filepath):
+    digest = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def get_pc_persistent_data_dir():
+    """Return Unity's expected persistentDataPath for the CN PC client."""
+    return Path.home() / "AppData" / "LocalLow" / "Hypergryph" / "Arknights"
+
+
+def _read_client_versions(player_log):
+    versions = {
+        "clientVersion": None,
+        "assetsVersion": None,
+        "udtVersion": None,
+    }
+    if not player_log.is_file():
+        return versions
+    text = player_log.read_text(encoding="utf-8", errors="replace")
+    for key in versions:
+        matches = re.findall(rf'"{key}"\s*:\s*"([^"]+)"', text)
+        if matches:
+            versions[key] = matches[-1]
+    return versions
+
+
+def _file_info(filepath):
+    filepath = Path(filepath)
+    if not filepath.is_file():
+        return None
+    stat = filepath.stat()
+    return {
+        "path": str(filepath.resolve()),
+        "size": stat.st_size,
+        "mtime": datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(),
+        "sha256": _sha256(filepath),
+    }
+
+
+def collect_pc_dump(ak_exe_filepath=None, source_dir=None, dump_dirpath=None):
+    """Archive Trainer output already written by the Windows game process.
+
+    The Trainer writes through Frida's File API into Unity persistentDataPath.
+    This function intentionally performs no injection and does not manufacture
+    files that the runtime did not export.
+    """
+    source = Path(source_dir) if source_dir else get_pc_persistent_data_dir()
+    available = [
+        (source / remote_name, local_name)
+        for remote_name, local_name in remote_local_filename_mapping.items()
+        if (source / remote_name).is_file()
+    ]
+    if not available:
+        print(f"err: no Trainer exports found in {source}")
+        return None
+
+    now = datetime.now().astimezone()
+    versions = _read_client_versions(source / "Player.log")
+    version_label = versions["clientVersion"] or "unknown"
+    root = Path(dump_dirpath or DUMP_DIRPATH) / "pc"
+    base_name = f"{now:%Y%m%d_%H%M%S}_{version_label}"
+    destination = root / base_name
+    suffix = 1
+    while destination.exists():
+        destination = root / f"{base_name}_{suffix}"
+        suffix += 1
+    destination.mkdir(parents=True)
+
+    files = []
+    for source_path, local_name in available:
+        target_path = destination / local_name
+        shutil.copy2(source_path, target_path)
+        if target_path.suffix == ".json":
+            try:
+                with open(target_path, encoding="utf-8") as f:
+                    value = json.load(f)
+                with open(target_path, "w", encoding="utf-8") as f:
+                    json.dump(value, f, ensure_ascii=False, indent=4)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                print(f"warn: kept non-JSON Trainer output {target_path.name}: {exc}")
+        files.append({"name": target_path.name, **_file_info(target_path)})
+
+    executable = Path(ak_exe_filepath) if ak_exe_filepath else None
+    game_dir = executable.parent if executable and executable.is_file() else None
+    manifest = {
+        "exportedAt": now.isoformat(),
+        "sourceDirectory": str(source.resolve()),
+        "versions": versions,
+        "modules": {
+            "Arknights.exe": _file_info(executable) if executable else None,
+            "GameAssembly.dll": (
+                _file_info(game_dir / "GameAssembly.dll") if game_dir else None
+            ),
+        },
+        "files": files,
+        "capabilities": {
+            "dumpCs": any(row["name"] == "dump.cs" for row in files),
+            "runtimeJson": any(row["name"].endswith(".json") for row in files),
+            "decryptedGlobalMetadata": False,
+        },
+        "notes": [
+            "dump.cs method addresses are RVAs relative to the recorded GameAssembly.dll.",
+            "The Trainer does not export a decrypted global-metadata.dat.",
+        ],
+    }
+    with open(destination / "manifest.json", "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=4)
+
+    print(f"info: archived {len(files)} PC Trainer export(s) to {destination}")
+    return destination

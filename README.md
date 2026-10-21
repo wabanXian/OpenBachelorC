@@ -61,3 +61,35 @@ Windows PC (Experimental).
 ### 4. Restore Game
 
 1. Run `unset_pc.cmd`.
+
+### Optional: collect PC IL2CPP runtime dumps
+
+This is disabled by default and uses the existing Trainer build. Start the PC
+client explicitly with:
+
+```cmd
+.\main-uv.cmd --attach_pc --dump_json
+```
+
+`--dump_json` enables runtime game-database JSON export only. At the Trainer
+prompt, run `!dump` to ask the bundled `frida-il2cpp-bridge` code to write
+`dump.cs`. After the game has finished writing the files, run:
+
+```text
+?collect_pc_dump
+```
+
+The command copies existing files from Unity's Windows `persistentDataPath`
+into a new timestamped directory under `dump/pc/`. It also writes
+`manifest.json` with client versions found in `Player.log`, hashes for
+`Arknights.exe` and `GameAssembly.dll`, export hashes, and capability notes.
+Existing archives are never overwritten.
+
+The generated method addresses in `dump.cs` are RVAs relative to the recorded
+`GameAssembly.dll`. The Trainer does not export or decrypt
+`global-metadata.dat`; `manifest.json` records that limitation explicitly.
+
+For repeatable REA/Ghidra investigation of a collected PC build, see
+[`doc/il2cpp_analysis_workflow.md`](doc/il2cpp_analysis_workflow.md). The
+default workflow uses a persistent, IL2CPP-seeded Ghidra project and does not
+run whole-program auto-analysis.

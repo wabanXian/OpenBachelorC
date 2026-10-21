@@ -23,7 +23,7 @@ from .adb import (
 from .config import config
 from .inject import start_game
 from .util import register_callback_func, invoke_callback_func
-from .dump import pull_dumped_json
+from .dump import collect_pc_dump, pull_dumped_json
 
 from .pc_const import AK_EXE_FILEPATH_TXT_FILEPATH
 
@@ -165,7 +165,14 @@ def run_cmd(game, text):
 
 
 def setup_cli(emulator_id, game):
-    if not config["attach_pc"]:
+    if config["attach_pc"]:
+        ak_exe_filepath = Path(AK_EXE_FILEPATH_TXT_FILEPATH).read_text(
+            encoding="utf-8"
+        ).strip().strip('"')
+        register_callback_func(
+            "collect_pc_dump", lambda: collect_pc_dump(ak_exe_filepath)
+        )
+    else:
         register_callback_func(
             "pull_dumped_json", lambda: pull_dumped_json(emulator_id)
         )
