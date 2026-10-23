@@ -4,6 +4,7 @@ import subprocess
 import json
 import hashlib
 from pathlib import Path
+from urllib.parse import urlparse
 
 import frida
 import requests
@@ -41,7 +42,7 @@ def _pc_gameassembly_path():
 
 
 def prepare_historical_gacha_config(proxy_url, historical_config):
-    """Authenticate and version-check the optional, gacha-only PC shim."""
+    """Read the loopback server date and version-check the optional PC shim."""
     if not historical_config.get("enabled", False):
         return None
     if not config.get("attach_pc", False):
@@ -58,14 +59,12 @@ def prepare_historical_gacha_config(proxy_url, historical_config):
         )
         return None
 
-    token = historical_config.get("account_token")
-    if not token:
-        print("warn: historical gacha compatibility disabled: account_token missing")
+    if urlparse(proxy_url).hostname not in {"127.0.0.1", "::1", "localhost"}:
+        print("warn: historical gacha compatibility disabled: server is not loopback")
         return None
     try:
         result = requests.post(
             f"{proxy_url}/account/historicalContentDate",
-            headers={"secret": token},
             json={},
             proxies={"http": "", "https": ""},
             timeout=5,
@@ -82,8 +81,8 @@ def prepare_historical_gacha_config(proxy_url, historical_config):
         return None
 
     print(
-        "info: historical gacha compatibility authenticated "
-        f"account={result.get('account')} date={result.get('date')} "
+        "info: historical gacha compatibility loaded "
+        f"date={result.get('date')} "
         f"client={historical_config.get('client_version')}"
     )
     return {
