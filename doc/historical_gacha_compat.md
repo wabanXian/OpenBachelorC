@@ -1,0 +1,69 @@
+# Windows PC historical gacha compatibility
+
+## Scope and evidence
+
+This compatibility layer changes only the timestamp passed by
+`Torappu.GachaDB.GetValidPoolsEnumerator()` to its time-list enumerator.  The
+current PC `dump.cs` identifies:
+
+- `GachaDB.GetValidPoolsEnumerator`: RVA `0x0200df80`;
+- `DateTimeUtil.get_timeStampNow`: RVA `0x066e08e0`;
+- `GachaPoolClientData.openTime/endTime`: offsets `0x20/0x28`.
+
+Targeted decompilation of `GetValidPoolsEnumerator` confirms that it calls
+`DateTimeUtil.get_timeStampNow()` once and stores that result in the returned
+enumerator's `curTs`.  `rel/historical_gacha.js` therefore substitutes the
+timestamp only while this method is active on the same thread.  It does not
+change `DateTime.Now`, `DateTimeUtil` globally, account `syncData.ts`, AP,
+building production, or training clocks.
+
+The implementation is bound to Windows client 2.7.81's recorded
+`GameAssembly.dll` SHA-256
+`583b04ff4d1b1a4b35eaf09d77d936408c25447c9e345ef0463d814b6a123fc5`.
+The launcher disables the shim safely when the hash differs.
+
+## Configuration and account binding
+
+The feature is disabled by default.  Set these values in `conf/config.json`:
+
+```json
+"historical_gacha_config": {
+  "enabled": true,
+  "account_token": "the same token used to log into this account",
+  "client_version": "2.7.81",
+  "gameassembly_sha256": "583b04ff4d1b1a4b35eaf09d77d936408c25447c9e345ef0463d814b6a123fc5",
+  "get_valid_pools_rva": "0x0200df80",
+  "timestamp_now_rva": "0x066e08e0"
+}
+```
+
+At startup the launcher calls the S endpoint
+`POST /account/historicalContentDate` with that token in the `secret` header.
+The endpoint returns only that authenticated account's content date.  Realtime
+mode, a missing token, an unreachable server, an invalid timestamp, or a DLL
+hash mismatch leaves the original client behaviour untouched.
+
+Changing the date requires logging out and restarting/re-attaching the PC
+client.  No recompilation is needed.  A successful attach prints both:
+
+- `historical gacha compatibility authenticated account=... date=...`;
+- a Frida message from `historical_gacha.js` with `kind: installed`.
+
+## 2019-11-20 manual acceptance
+
+1. Back up the isolated test account, then run S-side
+   `historical-content-save set-date ... 2019-11-20`.
+2. Put the same account token in the C configuration and enable the feature.
+3. Start S, then launch C with `--attach_pc`; log into that same test account.
+4. Open Headhunting.  `NORM_4_0_5` and `NORM_5_0_1` should both appear (plus
+   the account's new-player pool when applicable).
+5. Open each detail page and verify the advertised rate-up operators.
+6. Perform an isolated single pull and ten-pull with sufficient test-account
+   currency, then relog and verify currency, operators, guarantee state, and
+   shared normal-pool six-star pity persist.
+7. Change/reset the S-side date and restart/relog; the list must refresh to the
+   newly valid GameData window.
+
+Automated tests cover configuration gating, authenticated date retrieval,
+binary mismatch shutdown, and JavaScript syntax.  Actual Frida attachment and
+the rendered Windows client list remain real-client acceptance items.

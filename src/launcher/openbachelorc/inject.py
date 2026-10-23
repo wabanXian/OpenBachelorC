@@ -2,6 +2,8 @@ import os
 import time
 import subprocess
 import json
+import hashlib
+from pathlib import Path
 
 import frida
 import requests
@@ -16,6 +18,84 @@ JAVA_SCRIPT_FILEPATH = os.path.join(SCRIPT_DIRPATH, "java.js")
 NATIVE_SCRIPT_FILEPATH = os.path.join(SCRIPT_DIRPATH, "native.js")
 EXTRA_SCRIPT_FILEPATH = os.path.join(SCRIPT_DIRPATH, "extra.js")
 TRAINER_SCRIPT_FILEPATH = os.path.join(SCRIPT_DIRPATH, "trainer.js")
+HISTORICAL_GACHA_SCRIPT_FILEPATH = os.path.join(
+    SCRIPT_DIRPATH, "historical_gacha.js"
+)
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _pc_gameassembly_path():
+    from .pc_const import AK_EXE_FILEPATH_TXT_FILEPATH
+
+    exe_path = Path(AK_EXE_FILEPATH_TXT_FILEPATH).read_text(
+        encoding="utf-8"
+    ).strip().strip('"')
+    return Path(exe_path).parent / "GameAssembly.dll"
+
+
+def prepare_historical_gacha_config(proxy_url, historical_config):
+    """Authenticate and version-check the optional, gacha-only PC shim."""
+    if not historical_config.get("enabled", False):
+        return None
+    if not config.get("attach_pc", False):
+        print("warn: historical gacha compatibility is PC-only; disabled")
+        return None
+
+    dll_path = _pc_gameassembly_path()
+    expected_hash = historical_config.get("gameassembly_sha256", "").lower()
+    actual_hash = _sha256_file(dll_path).lower()
+    if not expected_hash or actual_hash != expected_hash:
+        print(
+            "warn: historical gacha compatibility disabled: "
+            f"GameAssembly.dll mismatch ({actual_hash})"
+        )
+        return None
+
+    token = historical_config.get("account_token")
+    if not token:
+        print("warn: historical gacha compatibility disabled: account_token missing")
+        return None
+    try:
+        result = requests.post(
+            f"{proxy_url}/account/historicalContentDate",
+            headers={"secret": token},
+            json={},
+            proxies={"http": "", "https": ""},
+            timeout=5,
+        ).json()
+    except Exception as exc:
+        print(f"warn: historical gacha compatibility disabled: date query failed: {exc}")
+        return None
+    if result.get("result") != 0 or result.get("mode") != "historical":
+        print("info: account uses realtime content date; historical gacha shim disabled")
+        return None
+    timestamp = result.get("contentTs")
+    if not isinstance(timestamp, int) or timestamp <= 0:
+        print("warn: historical gacha compatibility disabled: invalid content timestamp")
+        return None
+
+    print(
+        "info: historical gacha compatibility authenticated "
+        f"account={result.get('account')} date={result.get('date')} "
+        f"client={historical_config.get('client_version')}"
+    )
+    return {
+        "content_ts": timestamp,
+        "get_valid_pools_rva": int(
+            historical_config.get("get_valid_pools_rva", "0x0200df80"), 0
+        ),
+        "timestamp_now_rva": int(
+            historical_config.get("timestamp_now_rva", "0x066e08e0"), 0
+        ),
+        "activate": True,
+    }
 
 
 def test_remote_port():
@@ -57,7 +137,8 @@ def load_script(device, pid, script_filepath, script_config, is_emulated_realm=F
 
 class Game:
     def __init__(
-        self, device, pid, java_script, native_script, extra_script, trainer_script
+        self, device, pid, java_script, native_script, extra_script, trainer_script,
+        historical_gacha_script=None,
     ):
         self.device = device
         self.pid = pid
@@ -65,6 +146,7 @@ class Game:
         self.native_script = native_script
         self.extra_script = extra_script
         self.trainer_script = trainer_script
+        self.historical_gacha_script = historical_gacha_script
 
     def exec_trainer_command(self, trainer_command_name):
         if self.trainer_script is not None:
@@ -168,10 +250,26 @@ def start_game(emulator_id):
             is_emulated_realm=is_emulated_realm,
         )
 
+    historical_gacha_script = None
+    historical_script_config = prepare_historical_gacha_config(
+        proxy_url, config.get("historical_gacha_config", {})
+    )
+    if historical_script_config is not None:
+        historical_gacha_script = load_script(
+            device,
+            pid,
+            HISTORICAL_GACHA_SCRIPT_FILEPATH,
+            historical_script_config,
+            is_emulated_realm=is_emulated_realm,
+        )
+
     if not config["attach_pc"]:
         if not config["no_spawn"]:
             device.resume(pid)
 
-    game = Game(device, pid, java_script, native_script, extra_script, trainer_script)
+    game = Game(
+        device, pid, java_script, native_script, extra_script, trainer_script,
+        historical_gacha_script,
+    )
 
     return game
